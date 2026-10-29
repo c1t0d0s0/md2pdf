@@ -119,7 +119,18 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	log.Debug(fmt.Sprintf("template=%s toc=%v files=%d", templateName, toc, len(doc.Files)))
 
-	workDir, err := os.MkdirTemp("", "md2pdf-")
+	browser, err := render.FindBrowser(cfg.BrowserPath)
+	if err != nil {
+		return nil, err
+	}
+	workBase, err := render.WorkDirBase(browser)
+	if err != nil {
+		return nil, err
+	}
+	if workBase != "" {
+		log.Debug("snap browser detected; work directory base: " + workBase)
+	}
+	workDir, err := os.MkdirTemp(workBase, "md2pdf-")
 	if err != nil {
 		return nil, errs.Runtime("cannot create work directory: %v", err)
 	}
@@ -157,7 +168,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	log.Debug("document: " + assembled.Path)
 
 	session, err := render.Open(ctx, markdown.FileURL(assembled.Path), render.Options{
-		BrowserPath: cfg.BrowserPath,
+		BrowserPath: browser,
 		Timeout:     cfg.Timeout,
 		NoSandbox:   cfg.NoSandbox,
 		Debugf:      func(f string, a ...any) { log.Debug(fmt.Sprintf(f, a...)) },

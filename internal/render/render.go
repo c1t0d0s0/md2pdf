@@ -3,12 +3,15 @@
 package render
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -117,6 +120,67 @@ func findCachedBrowser() string {
 		if len(matches) > 0 {
 			return matches[0]
 		}
+	}
+	return ""
+}
+
+// WorkDirBase returns the parent directory for files the browser must read,
+// or "" for the system temporary directory. Snap-packaged browsers have a
+// private /tmp and cannot read hidden directories, so their files go in the
+// snap's per-user common directory instead.
+func WorkDirBase(browser string) (string, error) {
+	name := snapName(browser)
+	if name == "" {
+		return "", nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errs.Runtime("cannot locate the home directory for the %s snap: %v", name, err)
+	}
+	dir := filepath.Join(home, "snap", name, "common")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", errs.Runtime("cannot create work directory for the %s snap: %v", name, err)
+	}
+	return dir, nil
+}
+
+var snapBinRef = regexp.MustCompile(`/snap/bin/([A-Za-z0-9][A-Za-z0-9-]*)`)
+
+// snapName returns the name of the snap that provides browser, or "" if it
+// is not a snap. It recognizes /snap/bin entries, symlinks into snapd, and
+// shell wrappers such as Ubuntu's /usr/bin/chromium-browser.
+func snapName(browser string) string {
+	fromBin := func(p string) string {
+		if rest, ok := strings.CutPrefix(p, "/snap/bin/"); ok {
+			name, _, _ := strings.Cut(rest, ".") // chromium.chromedriver -> chromium
+			return name
+		}
+		return ""
+	}
+	if name := fromBin(browser); name != "" {
+		return name
+	}
+	if real, err := filepath.EvalSymlinks(browser); err == nil {
+		if name := fromBin(real); name != "" {
+			return name
+		}
+		if b := filepath.Base(real); b == "snap" || b == "snapd" {
+			return filepath.Base(browser)
+		}
+	}
+	f, err := os.Open(browser)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	head := make([]byte, 4<<10)
+	n, _ := io.ReadFull(f, head)
+	head = head[:n]
+	if !bytes.HasPrefix(head, []byte("#!")) {
+		return ""
+	}
+	if m := snapBinRef.FindSubmatch(head); m != nil {
+		return string(m[1])
 	}
 	return ""
 }
